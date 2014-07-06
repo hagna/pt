@@ -1,13 +1,13 @@
 package pt
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
+	"github.com/jmhodges/levigo"
 	"log"
 	"runtime"
-	"fmt"
 	"strings"
-	"github.com/jmhodges/levigo"
-	"encoding/binary"
 )
 
 func _msg() string {
@@ -22,6 +22,12 @@ func _msg() string {
 	return msg
 }
 
+func Error(i ...interface{}) {
+	msg := _msg()
+	log.Printf(msg)
+	log.Println(i...)
+}
+
 func debug(i ...interface{}) {
 	msg := _msg()
 	fmt.Printf(msg)
@@ -34,22 +40,23 @@ func debugf(format string, i ...interface{}) {
 }
 
 type Node struct {
-	Id	int	`json:"id"`
-	Name      string            `json:"name"`
-	Value    []string          `json:"value"`
+	Id       int            `json:"id"`
+	Name     string         `json:"name"`
+	Value    []string       `json:"value"`
 	Children map[string]int `json:"children"`
-	Parent   int `json:"parent"`
-	Edgename string            `json:"edgename"`
+	Parent   int            `json:"parent"`
+	Edgename string         `json:"edgename"`
 }
 
 var Root *Node = &Node{Id: 1}
+var Newid chan int = make(chan int)
 
 type Tree struct {
 	*levigo.DB
 }
 
 func int2b(a int) []byte {
-	b := []byte{0,0,0,0}
+	b := []byte{0, 0, 0, 0}
 	binary.BigEndian.PutUint32(b, uint32(a))
 	return b
 }
@@ -59,7 +66,7 @@ func (t *Tree) Get(ro *levigo.ReadOptions, id int) (*Node, error) {
 	b := int2b(id)
 	dat, err := t.DB.Get(ro, b)
 	if err != nil {
-		return nil, err		
+		return nil, err
 	}
 	res := new(Node)
 	json.Unmarshal(dat, res)
@@ -67,7 +74,7 @@ func (t *Tree) Get(ro *levigo.ReadOptions, id int) (*Node, error) {
 
 }
 
-func (t *Tree) Put(wo *levigo.WriteOptions, n Node) error {
+func (t *Tree) Put(wo *levigo.WriteOptions, n *Node) error {
 	debug("Put")
 	if dat, err := json.Marshal(n); err != nil {
 		return err
@@ -84,13 +91,18 @@ func NewTree(dbname string) *Tree {
 	debug("New tree")
 	n := new(Tree)
 	opts := levigo.NewOptions()
-	opts.SetCache(levigo.NewLRUCache(3<<30))
+	opts.SetCache(levigo.NewLRUCache(3 << 30))
 	opts.SetCreateIfMissing(true)
 	db, err := levigo.Open(dbname, opts)
 	if err != nil {
 		log.Fatal(err)
 	}
 	n.DB = db
+	wo := levigo.NewWriteOptions()
+	if err := n.Put(wo, Root); err != nil {
+		Error(err)
+	}
+	defer wo.Close()
 	return n
 }
 
@@ -128,7 +140,7 @@ func (t *Tree) fetchChild(ro *levigo.ReadOptions, n *Node, s string) *Node {
 	characters (starting from 0) that match.
 
 */
-func (t* Tree) Lookup(n *Node, search string, i int) (*Node, int) {
+func (t *Tree) Lookup(n *Node, search string, i int) (*Node, int) {
 	ro := levigo.NewReadOptions()
 	defer ro.Close()
 	res, i := t.OptLookup(ro, n, search, i)
@@ -153,21 +165,46 @@ func (t *Tree) OptLookup(opt *levigo.ReadOptions, n *Node, search string, i int)
 	return n, i
 }
 
+func (t *Tree) addChild(wo *levigo.WriteOptions, parent *Node, edgename, name string, value []string) error {
+	child := new(Node)
+	child.Id = <-Newid
+	child.Parent = parent.Id
+	child.Edgename = edgename
+	child.Name = name
+	child.Value = value
+	if parent.Children == nil {
+		parent.Children = make(map[string]int)
+	}
+	parent.Children[string(edgename[0])] = child.Id
+	err := t.Put(wo, parent)
+	if err != nil {
+		return err
+	}
+	err = t.Put(wo, child)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (t *Tree) Insert(k, v string) {
+	wo := levigo.NewWriteOptions()
+	ro := levigo.NewReadOptions()
+	t.InsertOpt(wo, ro, k, v)
+}
+
+func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v string) {
 	debug("insert", k, v)
-	root := new(Node)
-	n, i := t.Lookup(root, k, 0)
+	n, i := t.Lookup(Root, k, 0)
 	commonprefix := k[:i]
 	debug("Insert", k, "and commonprefix is", commonprefix)
 
 	debugf("Lookup returns node '%+v' mathced chars = '%v' match '%v'\n", n, i, k[:i])
 
 	debug("is it the root?")
-	if n == root {
+	if n == Root {
 		debug("addChild")
-		latestroot := root
-		log.Println(latestroot)
-		// t.addChild(latestroot, k, k, []string{v})
+		t.addChild(wo, Root, k, k, []string{v})
 		debug("yes")
 		return
 	}
@@ -175,24 +212,21 @@ func (t *Tree) Insert(k, v string) {
 
 	debug("is it a complete match?")
 	if k == n.Name {
-		dn := n
-		dn.Value = append(dn.Value, v)
-		// t.write(dn)
-
+		n.Value = append(n.Value, v)
 		debug("node", n, "already found append value here TODO")
 		debug("yes")
+		t.Put(wo, n)
 		return
 	}
 	debug("no")
 
-	debug("does commonprefix consume the whole tree so far?")
-	// the best match matches the whole key (including n.Edgename)
+	debug("does commonprefix match the whole edgename and more?")
 	if commonprefix == n.Name {
-		// but if it is longer than the key it's a simple add
+		// but if it is longer such as "alibaba" and we add "alibabas" it's a simple add
 		if len(k) > len(n.Name) {
 			e := k[len(commonprefix):]
 			log.Println(e)
-			// t.addChild(dn, e, k, []string{v})
+			t.addChild(wo, n, e, k, []string{v})
 			debug("yes")
 			return
 		}
@@ -226,7 +260,7 @@ func (t *Tree) Insert(k, v string) {
 	leftnode.Value = n.Value
 	leftnode.Edgename = lname
 	leftnode.Name = mid.Name
-	leftnode.Id = mid.Id
+	leftnode.Id = <-Newid
 	leftnode.Children = mid.Children
 	children[string(leftnode.Edgename[0])] = leftnode.Id
 
@@ -244,23 +278,22 @@ func (t *Tree) Insert(k, v string) {
 		rightnode.Value = append(rightnode.Value, v)
 		rightnode.Edgename = rname
 		rightnode.Name = k
+		rightnode.Id = <-Newid
 		children[string(rightnode.Edgename[0])] = rightnode.Id
 		rightnode.Parent = mid.Id
-//		t.write(rightnode)
+		t.Put(wo, rightnode)
 	}
 
 	mid.Children = children
 
-	// also update mid's parent id 
-	midparent := n
+	// also update mid's parent id
+	midparent, err := t.Get(ro, n.Parent)
+	if err != nil {
+		Error(err)
+	}
 	midparent.Children[string(midname[0])] = mid.Id
 
-/*	t.write(midparent)
-	t.write(mid)
-	t.write(leftnode)
-	*/
-
+	t.Put(wo, midparent)
+	t.Put(wo, mid)
+	t.Put(wo, leftnode)
 }
-
-
-

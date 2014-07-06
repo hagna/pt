@@ -1,10 +1,10 @@
 package pt
 
 import (
-	"testing"
-	"os"
 	"github.com/jmhodges/levigo"
+	"os"
 	"strings"
+	"testing"
 )
 
 func TestCrud(t *testing.T) {
@@ -15,13 +15,13 @@ func TestCrud(t *testing.T) {
 	defer wo.Close()
 	defer os.RemoveAll(dirname)
 	l := NewTree(dirname)
-	n := Node{Name: "foo", Id:1}
+	n := &Node{Name: "foo", Id: 1}
 	l.Put(wo, n)
 	z, _ := l.Get(ro, 1)
 	if z.Name != n.Name {
 		t.Fatal("Didn't get what I put in", z.Name, n.Name)
 	}
-	n2 := Node{Name: "bar", Id: 1}
+	n2 := &Node{Name: "bar", Id: 1}
 	l.Put(wo, n2)
 	z, _ = l.Get(ro, 1)
 	if z.Name != n2.Name {
@@ -56,5 +56,3 @@ aardvark`
 		isFound(t, tree, v)
 	}
 }
-
-
