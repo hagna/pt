@@ -31,7 +31,7 @@ func TestCrud(t *testing.T) {
 }
 
 func isFound(t *testing.T, tree *Tree, s string, v string) {
-	a, i := tree.Lookup(Root, s, 0)
+	a, i := tree.Lookup(tree.Root, s, 0)
 	if i != len(a.Name) || a.Name != s {
 		t.Fatalf("could not find string %s closest was %+v\n", s, a)
 	}

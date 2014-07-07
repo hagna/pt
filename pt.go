@@ -48,20 +48,10 @@ type Node struct {
 	Edgename string         `json:"edgename"`
 }
 
-var Root *Node = &Node{Id: 0}
-var Newid chan int = make(chan int)
-
-func init() {
-	go func() {
-		id := Root.Id + 1
-		for ; ; id++ {
-			Newid <- id
-		}
-	}()	
-}
-
 type Tree struct {
 	*levigo.DB
+	Root *Node
+	Newid chan int
 }
 
 func int2b(a int) []byte {
@@ -99,6 +89,14 @@ func (t *Tree) Put(wo *levigo.WriteOptions, n *Node) error {
 func NewTree(dbname string) *Tree {
 	debug("New tree")
 	n := new(Tree)
+	n.Root = &Node{Id: 0}
+	n.Newid = make(chan int)
+	go func() {
+		id := n.Root.Id + 1
+		for ; ; id++ {
+			n.Newid <- id
+		}
+	}()	
 	opts := levigo.NewOptions()
 	opts.SetCache(levigo.NewLRUCache(3 << 30))
 	opts.SetCreateIfMissing(true)
@@ -108,7 +106,7 @@ func NewTree(dbname string) *Tree {
 	}
 	n.DB = db
 	wo := levigo.NewWriteOptions()
-	if err := n.Put(wo, Root); err != nil {
+	if err := n.Put(wo, n.Root); err != nil {
 		Error(err)
 	}
 	defer wo.Close()
@@ -156,11 +154,11 @@ func (t *Tree) fetchChild(ro *levigo.ReadOptions, n *Node, s string) *Node {
 func (t *Tree) Lookup(n *Node, search string, i int) (*Node, int) {
 	ro := levigo.NewReadOptions()
 	defer ro.Close()
-	res, i := t.OptLookup(ro, n, search, i)
+	res, i := t.LookupOpt(ro, n, search, i)
 	return res, i
 }
 
-func (t *Tree) OptLookup(opt *levigo.ReadOptions, n *Node, search string, i int) (*Node, int) {
+func (t *Tree) LookupOpt(opt *levigo.ReadOptions, n *Node, search string, i int) (*Node, int) {
 
 	if n == nil {
 		return nil, i
@@ -170,7 +168,7 @@ func (t *Tree) OptLookup(opt *levigo.ReadOptions, n *Node, search string, i int)
 	i += len(match)
 	if i < len(search) && len(n.Edgename) == len(match) {
 		child := t.fetchChild(opt, n, string(search[i]))
-		c, i := t.OptLookup(opt, child, search, i)
+		c, i := t.LookupOpt(opt, child, search, i)
 		if c != nil {
 			return c, i
 		}
@@ -180,7 +178,7 @@ func (t *Tree) OptLookup(opt *levigo.ReadOptions, n *Node, search string, i int)
 
 func (t *Tree) addChild(wo *levigo.WriteOptions, parent *Node, edgename, name string, value []string) error {
 	child := new(Node)
-	child.Id = <-Newid
+	child.Id = <-t.Newid
 	child.Parent = parent.Id
 	child.Edgename = edgename
 	child.Name = name
@@ -203,27 +201,29 @@ func (t *Tree) addChild(wo *levigo.WriteOptions, parent *Node, edgename, name st
 func (t *Tree) Insert(k, v string) {
 	wo := levigo.NewWriteOptions()
 	ro := levigo.NewReadOptions()
+	defer ro.Close()
+	defer wo.Close()
 	t.InsertOpt(wo, ro, k, v)
 }
 
 func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v string) {
 	debug("insert", k, v)
-	n, i := t.Lookup(Root, k, 0)
+	n, i := t.LookupOpt(ro, t.Root, k, 0)
 	commonprefix := k[:i]
 	debug("Insert", k, "and commonprefix is", commonprefix)
 
 	debugf("Lookup returns node '%+v' mathced chars = '%v' match '%v'\n", n, i, k[:i])
 
 	debug("is it the root?")
-	if n == Root {
+	if n == t.Root {
 		debug("addChild")
-		t.addChild(wo, Root, k, k, []string{v})
+		t.addChild(wo, t.Root, k, k, []string{v})
 		debug("yes")
 		return
 	}
 	debug("no")
 
-	debug("is it a complete match?")
+	debug("is it an exact match?")
 	if k == n.Name {
 		n.Value = append(n.Value, v)
 		debug("node", n, "already found append value here TODO")
@@ -266,14 +266,14 @@ func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v s
 	ie := strings.LastIndex(n.Name, n.Edgename)
 	midname := n.Name[ie:len(commonprefix)]
 
-	debugf("into left \"%s\" right \"%s\"\n", lname, rname)
+	debugf("left \"%s\" right \"%s\"\n", lname, rname)
 
 	// left node (preserve the old string)
 	leftnode := new(Node)
 	leftnode.Value = n.Value
 	leftnode.Edgename = lname
 	leftnode.Name = mid.Name
-	leftnode.Id = <-Newid
+	leftnode.Id = <-t.Newid
 	leftnode.Children = mid.Children
 	children[string(leftnode.Edgename[0])] = leftnode.Id
 
@@ -282,18 +282,18 @@ func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v s
 	mid.Name = commonprefix
 	leftnode.Parent = mid.Id
 
-	// if you have 'cats' and try to add 'cat'
-	// you'll have this empty right node case
 	if rname == "" {
+		// if no right node them mid will have the value
 		mid.Value = append(mid.Value, v)
 	} else {
-		// right node (add the new string)
+		// if you have 'cats' and try to add 'cat'
+		// you'll have this empty right node case
 		mid.Value = []string{}
 		rightnode := new(Node)
 		rightnode.Value = append(rightnode.Value, v)
 		rightnode.Edgename = rname
 		rightnode.Name = k
-		rightnode.Id = <-Newid
+		rightnode.Id = <-t.Newid
 		children[string(rightnode.Edgename[0])] = rightnode.Id
 		rightnode.Parent = mid.Id
 		t.Put(wo, rightnode)
