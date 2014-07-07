@@ -48,8 +48,17 @@ type Node struct {
 	Edgename string         `json:"edgename"`
 }
 
-var Root *Node = &Node{Id: 1}
+var Root *Node = &Node{Id: 0}
 var Newid chan int = make(chan int)
+
+func init() {
+	go func() {
+		id := Root.Id + 1
+		for ; ; id++ {
+			Newid <- id
+		}
+	}()	
+}
 
 type Tree struct {
 	*levigo.DB
@@ -124,12 +133,16 @@ func matchprefix(a, b string) string {
 }
 
 func (t *Tree) fetchChild(ro *levigo.ReadOptions, n *Node, s string) *Node {
-	newid := n.Children[s]
-	n, err := t.Get(ro, newid)
-	if err != nil {
-		log.Fatal(err)
+	newid, ok := n.Children[s]
+	if !ok {
+		return nil
 	}
-	return n
+	newnode, err := t.Get(ro, newid)
+	if err != nil {
+		Error(err)
+		return nil
+	}
+	return newnode
 }
 
 /*
@@ -253,7 +266,7 @@ func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v s
 	ie := strings.LastIndex(n.Name, n.Edgename)
 	midname := n.Name[ie:len(commonprefix)]
 
-	debug("into", lname, rname)
+	debugf("into left \"%s\" right \"%s\"\n", lname, rname)
 
 	// left node (preserve the old string)
 	leftnode := new(Node)
@@ -266,14 +279,16 @@ func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v s
 
 	// update the middle node
 	mid.Edgename = midname
-	mid.Value = []string{}
 	mid.Name = commonprefix
 	leftnode.Parent = mid.Id
 
 	// if you have 'cats' and try to add 'cat'
 	// you'll have this empty right node case
-	if rname != "" {
+	if rname == "" {
+		mid.Value = append(mid.Value, v)
+	} else {
 		// right node (add the new string)
+		mid.Value = []string{}
 		rightnode := new(Node)
 		rightnode.Value = append(rightnode.Value, v)
 		rightnode.Edgename = rname

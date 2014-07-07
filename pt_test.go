@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"fmt"
 )
 
 func TestCrud(t *testing.T) {
@@ -29,10 +30,19 @@ func TestCrud(t *testing.T) {
 	}
 }
 
-func isFound(t *testing.T, tree *Tree, s string) {
+func isFound(t *testing.T, tree *Tree, s string, v string) {
 	a, i := tree.Lookup(Root, s, 0)
 	if i != len(a.Name) || a.Name != s {
 		t.Fatalf("could not find string %s closest was %+v\n", s, a)
+	}
+	foundval := false
+	for _, val := range a.Value {
+		if v == val {
+			foundval = true
+		}
+	}
+	if !foundval {
+		t.Fatalf("could not find value %s in %+v\n", v, a)
 	}
 }
 
@@ -40,19 +50,40 @@ func TestInsertLookup(t *testing.T) {
 	l := `abating
 abalone
 abacus
-aback
+a
+aaa
+aardvark
+aaron
+back
 Ab
 Ab
 Aaron
-aardvark`
+aardvark
+abstain
+abstained
+abstaining
+abstention
+abstentions
+abstinence
+abstinent
+abstract
+abstracted
+abstraction
+abstractions
+abstracts
+abstruse`
+	value := 0
 	s := strings.Split(l, "\n")
 	dirname := "root2"
 	defer os.RemoveAll(dirname)
 	tree := NewTree(dirname)
 	for _, v := range s {
-		tree.Insert(v, "")
+		tree.Insert(v, fmt.Sprintf("%d", value))
+		value++
 	}
+	value = 0
 	for _, v := range s {
-		isFound(t, tree, v)
+		isFound(t, tree, v, fmt.Sprintf("%d", value))
+		value++
 	}
 }
