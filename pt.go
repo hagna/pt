@@ -8,6 +8,7 @@ import (
 	"log"
 	"runtime"
 	"strings"
+	"io"
 )
 
 func _msg() string {
@@ -17,7 +18,7 @@ func _msg() string {
 	} else {
 		j := strings.LastIndex(fname, "/")
 		fname = fname[j+1:]
-		msg = fmt.Sprintf("%s:%d ", fname, lineno)
+		msg = fmt.Sprintf("./%s:%d ", fname, lineno)
 	}
 	return msg
 }
@@ -61,7 +62,6 @@ func int2b(a int) []byte {
 }
 
 func (t *Tree) Get(ro *levigo.ReadOptions, id int) (*Node, error) {
-	debug("Get")
 	b := int2b(id)
 	dat, err := t.DB.Get(ro, b)
 	if err != nil {
@@ -74,7 +74,6 @@ func (t *Tree) Get(ro *levigo.ReadOptions, id int) (*Node, error) {
 }
 
 func (t *Tree) Put(wo *levigo.WriteOptions, n *Node) error {
-	debug("Put")
 	if dat, err := json.Marshal(n); err != nil {
 		return err
 	} else {
@@ -88,15 +87,7 @@ func (t *Tree) Put(wo *levigo.WriteOptions, n *Node) error {
 
 func NewTree(dbname string) *Tree {
 	debug("New tree")
-	n := new(Tree)
-	n.Root = &Node{Id: 0}
-	n.Newid = make(chan int)
-	go func() {
-		id := n.Root.Id + 1
-		for ; ; id++ {
-			n.Newid <- id
-		}
-	}()	
+	n := new(Tree)	
 	opts := levigo.NewOptions()
 	opts.SetCache(levigo.NewLRUCache(3 << 30))
 	opts.SetCreateIfMissing(true)
@@ -106,11 +97,35 @@ func NewTree(dbname string) *Tree {
 	}
 	n.DB = db
 	wo := levigo.NewWriteOptions()
-	if err := n.Put(wo, n.Root); err != nil {
+	ro := levigo.NewReadOptions()
+	defer wo.Close()
+	defer ro.Close()
+	if n.Root, err = n.Get(ro, 0); err != nil {
+		Error(err)
+	} else if n.Root.Parent == 0 {
+		if err := n.Put(wo, n.Root); err != nil {
+			Error(err)
+		}
+	}
+	n.Newid = make(chan int)
+	go func() {
+		id := n.Root.Parent + 1
+		for ; ; id++ {
+			n.Newid <- id
+		}
+	}()
+	return n
+}
+
+func (t *Tree) Close() {
+	// Root's parent contains the maxid
+	t.Root.Parent = <-t.Newid
+	t.Root.Parent--
+	wo := levigo.NewWriteOptions()
+	if err := t.Put(wo, t.Root); err != nil {
 		Error(err)
 	}
-	defer wo.Close()
-	return n
+	t.DB.Close()
 }
 
 // returns the matching prefix between the two
@@ -166,7 +181,7 @@ func (t *Tree) LookupOpt(opt *levigo.ReadOptions, n *Node, search string, i int)
 	debugf("Lookup(%+v, \"%s\", %d)\n", n, search, i)
 	match := matchprefix(n.Edgename, search[i:])
 	i += len(match)
-	if i < len(search) && len(n.Edgename) == len(match) {
+	if i < len(search) && n.Edgename == match {
 		child := t.fetchChild(opt, n, string(search[i]))
 		c, i := t.LookupOpt(opt, child, search, i)
 		if c != nil {
@@ -262,11 +277,14 @@ func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v s
 	lname := n.Name[len(commonprefix):]
 	rname := k[len(commonprefix):]
 
-	// index of edgename
-	ie := strings.LastIndex(n.Name, n.Edgename)
-	midname := n.Name[ie:len(commonprefix)]
+	midparent, err := t.Get(ro, n.Parent)
+	if err != nil {
+		Error("Couldn't find parent of", n, err)
+	}
 
-	debugf("left \"%s\" right \"%s\"\n", lname, rname)
+	midedgename := n.Name[len(midparent.Name):len(commonprefix)]
+
+	debugf("mid \"%s\" left \"%s\" right \"%s\"\n", commonprefix, lname, rname)
 
 	// left node (preserve the old string)
 	leftnode := new(Node)
@@ -278,7 +296,7 @@ func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v s
 	children[string(leftnode.Edgename[0])] = leftnode.Id
 
 	// update the middle node
-	mid.Edgename = midname
+	mid.Edgename = midedgename
 	mid.Name = commonprefix
 	leftnode.Parent = mid.Id
 
@@ -302,13 +320,37 @@ func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v s
 	mid.Children = children
 
 	// also update mid's parent id
-	midparent, err := t.Get(ro, n.Parent)
-	if err != nil {
-		Error(err)
-	}
-	midparent.Children[string(midname[0])] = mid.Id
+	delete(midparent.Children, string(n.Edgename[0]))
+	midparent.Children[string(midedgename[0])] = mid.Id
 
 	t.Put(wo, midparent)
 	t.Put(wo, mid)
 	t.Put(wo, leftnode)
+}
+
+func (t *Tree) Print(w io.Writer, n *Node, prefix string) {
+	ro := levigo.NewReadOptions()
+	cb := func(prefix string, val []string) {
+		fmt.Fprintf(w, "%s %s\n", prefix, val)
+	}
+	defer ro.Close()
+	t.Dfs(ro,  n, prefix, cb)
+}
+
+func (t *Tree) Dfs(ro *levigo.ReadOptions, n *Node, prefix string, cb func(prefix string, value []string)) {
+	dn := n
+	if len(dn.Children) == 0 {
+		cb(prefix, n.Value)
+	} else {
+		for _, c := range dn.Children {
+			cnode, err := t.Get(ro, c)
+			if err != nil {
+				Error(err)
+			}
+			t.Dfs(ro,cnode, prefix+cnode.Edgename, cb)
+		}
+		if len(n.Value) != 0 {
+			cb(prefix, n.Value)
+		}
+	}
 }

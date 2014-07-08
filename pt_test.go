@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"fmt"
+	"bytes"
 )
 
 func TestCrud(t *testing.T) {
@@ -47,31 +48,33 @@ func isFound(t *testing.T, tree *Tree, s string, v string) {
 }
 
 func TestInsertLookup(t *testing.T) {
-	l := `abating
+	l := `back
+abstruse
+abstracts
+abstractions
+abstraction
+abstracted
+abstract
+abstinent
+abstinence
+abstentions
+abstention
+abstaining
+abstained
+abstain
+abating
 abalone
 abacus
-a
-aaa
-aardvark
-aaron
-back
 Ab
 Ab
+aarons
 Aaron
+aaron
+aaron
 aardvark
-abstain
-abstained
-abstaining
-abstention
-abstentions
-abstinence
-abstinent
-abstract
-abstracted
-abstraction
-abstractions
-abstracts
-abstruse`
+aardvark
+aaa
+a`
 	value := 0
 	s := strings.Split(l, "\n")
 	dirname := "root2"
@@ -86,4 +89,7 @@ abstruse`
 		isFound(t, tree, v, fmt.Sprintf("%d", value))
 		value++
 	}
+	b := bytes.NewBuffer([]byte{})
+	tree.Print(b, tree.Root, "")
+	t.Log(b.String()) 
 }
