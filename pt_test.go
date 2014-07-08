@@ -92,4 +92,5 @@ a`
 	b := bytes.NewBuffer([]byte{})
 	tree.Print(b, tree.Root, "")
 	t.Log(b.String()) 
+	tree.Close()
 }

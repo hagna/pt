@@ -53,6 +53,7 @@ type Tree struct {
 	*levigo.DB
 	Root *Node
 	Newid chan int
+	closed bool
 }
 
 func int2b(a int) []byte {
@@ -87,7 +88,8 @@ func (t *Tree) Put(wo *levigo.WriteOptions, n *Node) error {
 
 func NewTree(dbname string) *Tree {
 	debug("New tree")
-	n := new(Tree)	
+	n := new(Tree)
+	n.closed = false
 	opts := levigo.NewOptions()
 	opts.SetCache(levigo.NewLRUCache(3 << 30))
 	opts.SetCreateIfMissing(true)
@@ -112,7 +114,11 @@ func NewTree(dbname string) *Tree {
 		id := n.Root.Parent + 1
 		for ; ; id++ {
 			n.Newid <- id
+			if n.closed {
+				break
+			}
 		}
+		log.Println("exiting Newid goroutine")
 	}()
 	return n
 }
@@ -125,6 +131,7 @@ func (t *Tree) Close() {
 	if err := t.Put(wo, t.Root); err != nil {
 		Error(err)
 	}
+	t.closed = true
 	t.DB.Close()
 }
 
