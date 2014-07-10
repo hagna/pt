@@ -4,11 +4,13 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"github.com/jmhodges/levigo"
 	"log"
 	"runtime"
 	"strings"
 	"io"
+
+	"code.google.com/p/leveldb-go/leveldb"
+	"code.google.com/p/leveldb-go/leveldb/db"
 )
 
 func _msg() string {
@@ -50,7 +52,7 @@ type Node struct {
 }
 
 type Tree struct {
-	*levigo.DB
+	*leveldb.DB
 	Root *Node
 	Newid chan int
 	closed bool
@@ -62,9 +64,9 @@ func int2b(a int) []byte {
 	return b
 }
 
-func (t *Tree) Get(ro *levigo.ReadOptions, id int) (*Node, error) {
+func (t *Tree) Get(ro *db.ReadOptions, id int) (*Node, error) {
 	b := int2b(id)
-	dat, err := t.DB.Get(ro, b)
+	dat, err := t.DB.Get(b, ro)
 	if err != nil {
 		return nil, err
 	}
@@ -74,12 +76,12 @@ func (t *Tree) Get(ro *levigo.ReadOptions, id int) (*Node, error) {
 
 }
 
-func (t *Tree) Put(wo *levigo.WriteOptions, n *Node) error {
+func (t *Tree) Put(wo *db.WriteOptions, n *Node) error {
 	if dat, err := json.Marshal(n); err != nil {
 		return err
 	} else {
 		b := int2b(n.Id)
-		if err = t.DB.Put(wo, b, dat); err != nil {
+		if err = t.DB.Set(b, dat, wo); err != nil {
 			return err
 		}
 	}
@@ -90,23 +92,16 @@ func NewTree(dbname string) *Tree {
 	debug("New tree")
 	n := new(Tree)
 	n.closed = false
-	opts := levigo.NewOptions()
-	opts.SetCache(levigo.NewLRUCache(3 << 30))
-	opts.SetCreateIfMissing(true)
-	db, err := levigo.Open(dbname, opts)
+	d, err := leveldb.Open(dbname, nil)
 	if err != nil {
-		log.Fatal(err)
-	}
-	n.DB = db
-	wo := levigo.NewWriteOptions()
-	ro := levigo.NewReadOptions()
-	defer wo.Close()
-	defer ro.Close()
-	if n.Root, err = n.Get(ro, 0); err != nil {
 		Error(err)
-	} else if n.Root.Parent == 0 {
-		if err := n.Put(wo, n.Root); err != nil {
-			Error(err)
+	}
+	n.DB = d
+	if n.Root, err = n.Get(nil, 0); err != nil {
+		debug("could not get", err)
+		n.Root = &Node{Parent: 0}
+		if err := n.Put(nil, n.Root); err != nil {
+			Error("could not set", err)
 		}
 	}
 	n.Newid = make(chan int)
@@ -127,8 +122,7 @@ func (t *Tree) Close() {
 	// Root's parent contains the maxid
 	t.Root.Parent = <-t.Newid
 	t.Root.Parent--
-	wo := levigo.NewWriteOptions()
-	if err := t.Put(wo, t.Root); err != nil {
+	if err := t.Put(nil, t.Root); err != nil {
 		Error(err)
 	}
 	t.closed = true
@@ -152,7 +146,7 @@ func matchprefix(a, b string) string {
 	return res
 }
 
-func (t *Tree) fetchChild(ro *levigo.ReadOptions, n *Node, s string) *Node {
+func (t *Tree) fetchChild(ro *db.ReadOptions, n *Node, s string) *Node {
 	newid, ok := n.Children[s]
 	if !ok {
 		return nil
@@ -174,13 +168,11 @@ func (t *Tree) fetchChild(ro *levigo.ReadOptions, n *Node, s string) *Node {
 
 */
 func (t *Tree) Lookup(n *Node, search string, i int) (*Node, int) {
-	ro := levigo.NewReadOptions()
-	defer ro.Close()
-	res, i := t.LookupOpt(ro, n, search, i)
+	res, i := t.LookupOpt(nil, n, search, i)
 	return res, i
 }
 
-func (t *Tree) LookupOpt(opt *levigo.ReadOptions, n *Node, search string, i int) (*Node, int) {
+func (t *Tree) LookupOpt(opt *db.ReadOptions, n *Node, search string, i int) (*Node, int) {
 
 	if n == nil {
 		return nil, i
@@ -198,7 +190,7 @@ func (t *Tree) LookupOpt(opt *levigo.ReadOptions, n *Node, search string, i int)
 	return n, i
 }
 
-func (t *Tree) addChild(wo *levigo.WriteOptions, parent *Node, edgename, name string, value []string) error {
+func (t *Tree) addChild(wo *db.WriteOptions, parent *Node, edgename, name string, value []string) error {
 	child := new(Node)
 	child.Id = <-t.Newid
 	child.Parent = parent.Id
@@ -221,14 +213,10 @@ func (t *Tree) addChild(wo *levigo.WriteOptions, parent *Node, edgename, name st
 }
 
 func (t *Tree) Insert(k, v string) {
-	wo := levigo.NewWriteOptions()
-	ro := levigo.NewReadOptions()
-	defer ro.Close()
-	defer wo.Close()
-	t.InsertOpt(wo, ro, k, v)
+	t.InsertOpt(nil, nil, k, v)
 }
 
-func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v string) {
+func (t *Tree) InsertOpt(wo *db.WriteOptions, ro *db.ReadOptions, k, v string) {
 	debug("insert", k, v)
 	n, i := t.LookupOpt(ro, t.Root, k, 0)
 	commonprefix := k[:i]
@@ -336,15 +324,13 @@ func (t *Tree) InsertOpt(wo *levigo.WriteOptions, ro *levigo.ReadOptions, k, v s
 }
 
 func (t *Tree) Print(w io.Writer, n *Node, prefix string) {
-	ro := levigo.NewReadOptions()
 	cb := func(prefix string, val []string) {
 		fmt.Fprintf(w, "%s %s\n", prefix, val)
 	}
-	defer ro.Close()
-	t.Dfs(ro,  n, prefix, cb)
+	t.Dfs(nil,  n, prefix, cb)
 }
 
-func (t *Tree) Dfs(ro *levigo.ReadOptions, n *Node, prefix string, cb func(prefix string, value []string)) {
+func (t *Tree) Dfs(ro *db.ReadOptions, n *Node, prefix string, cb func(prefix string, value []string)) {
 	dn := n
 	if len(dn.Children) == 0 {
 		cb(prefix, n.Value)
