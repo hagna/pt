@@ -92,16 +92,16 @@ func NewTree(dbname string) *Tree {
 	debug("New tree")
 	n := new(Tree)
 	n.closed = false
-	db, err := leveldb.Open("", nil)
+	d, err := leveldb.Open(dbname, nil)
 	if err != nil {
-		log.Fatal(err)
-	}
-	n.DB = db
-	if n.Root, err = n.Get(nil, 0); err != nil {
 		Error(err)
-	} else if n.Root.Parent == 0 {
+	}
+	n.DB = d
+	if n.Root, err = n.Get(nil, 0); err != nil {
+		debug("could not get", err)
+		n.Root = &Node{Parent: 0}
 		if err := n.Put(nil, n.Root); err != nil {
-			Error(err)
+			Error("could not set", err)
 		}
 	}
 	n.Newid = make(chan int)
