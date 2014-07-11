@@ -173,21 +173,23 @@ func (t *Tree) Lookup(n *Node, search string, i int) (*Node, int) {
 }
 
 func (t *Tree) LookupOpt(opt *db.ReadOptions, n *Node, search string, i int) (*Node, int) {
-
+	debugf("Lookup(%+v, \"%s\", %d)\n", n, search, i)
 	if n == nil {
 		return nil, i
 	}
-	debugf("Lookup(%+v, \"%s\", %d)\n", n, search, i)
-	match := matchprefix(n.Edgename, search[i:])
+	child := t.fetchChild(opt, n, string(search[i]))
+	if child == nil {
+		return n, i
+	}	
+	match := matchprefix(child.Edgename, search[i:])
 	i += len(match)
-	if i < len(search) && n.Edgename == match {
-		child := t.fetchChild(opt, n, string(search[i]))
+	if i < len(search) && child.Edgename == match {
 		c, i := t.LookupOpt(opt, child, search, i)
 		if c != nil {
 			return c, i
 		}
 	}
-	return n, i
+	return child, i
 }
 
 func (t *Tree) addChild(wo *db.WriteOptions, parent *Node, edgename, name string, value []string) error {
