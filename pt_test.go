@@ -89,3 +89,49 @@ a`
 	t.Log(b.String()) 
 	tree.Close()
 }
+
+func TestLookup(t *testing.T) {
+	l := `back
+abstruse
+abstracts
+abstractions
+abstraction
+abstracted
+abstract
+abstinent
+abstinence
+abstentions
+abstention
+abstaining
+abstained
+abstain
+abating
+abalone
+abacus
+Ab
+Ab
+aarons
+Aaron
+aaron
+aaron
+aardvark
+aardvark
+aaa
+a`
+	value := 0
+	s := strings.Split(l, "\n")
+	dirname := "root2"
+	defer os.RemoveAll(dirname)
+	tree := NewTree(dirname)
+	for _, v := range s {
+		tree.Insert(v, fmt.Sprintf("%d", value))
+		value++
+	}
+	n, i := tree.Lookup(tree.Root, "a", 0)
+	n2, j := tree.Lookup(n, "bstruse", 0)
+	if n2.Name != "abstruse" {
+		t.Fatal(n, i, n2, j)
+	}
+
+	tree.Close()
+}
